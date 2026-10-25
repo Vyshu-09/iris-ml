@@ -9,7 +9,12 @@ FEATURES = ["sepal_length", "sepal_width", "petal_length", "petal_width"]
 
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify({"service": "iris-species-prediction", "status": "ok"})
+    return jsonify({"service": "iris-species-prediction", "status": "ok", "version": "2.0"})
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"status": "healthy"})
 
 
 @app.route("/predict", methods=["POST"])
