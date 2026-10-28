@@ -1,0 +1,140 @@
+name: Iris ML - Kubernetes CI/CD
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+    inputs:
+      simulate_bad_image:
+        description: "Demo only - deploy a non-existent image tag to show the automatic rollback"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: vyshu-09/iris-ml
+
+jobs:
+  build-test-push:
+    runs-on: ubuntu-latest
+    outputs:
+      image_ref: ${{ steps.image.outputs.image_ref }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create immutable image reference
+        id: image
+        run: |
+          echo "image_ref=${REGISTRY}/${IMAGE_NAME}:sha-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Build Docker image for testing
+        run: docker build -t iris-ml:ci .
+
+      - name: Start test container
+        run: docker run -d --name iris-ci -p 5000:5000 iris-ml:ci
+
+      - name: Wait for health endpoint
+        run: |
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:5000/health; then
+              echo ""
+              echo "Container health test passed"
+              exit 0
+            fi
+            echo "Waiting for API..."
+            sleep 2
+          done
+          docker logs iris-ci
+          exit 1
+
+      - name: Test prediction endpoint
+        run: |
+          curl -fsS -X POST http://127.0.0.1:5000/predict -H "Content-Type: application/json" --data @test_payload.json
+
+      - name: Run existing automated tests (only if a tests folder exists)
+        run: |
+          if [ -d tests ]; then
+            python -m pip install --upgrade pip
+            pip install -r requirements.txt pytest
+            pytest -q
+          else
+            echo "No tests folder - skipping"
+          fi
+
+      - name: Stop test container
+        if: always()
+        run: docker rm -f iris-ci || true
+
+      - name: Log in to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Tag tested image
+        run: |
+          docker tag iris-ml:ci ${REGISTRY}/${IMAGE_NAME}:sha-${GITHUB_SHA}
+          docker tag iris-ml:ci ${REGISTRY}/${IMAGE_NAME}:latest
+
+      - name: Push tested image to GHCR
+        run: |
+          docker push ${REGISTRY}/${IMAGE_NAME}:sha-${GITHUB_SHA}
+          docker push ${REGISTRY}/${IMAGE_NAME}:latest
+
+  deploy-kubernetes:
+    needs: build-test-push
+    runs-on: self-hosted
+    defaults:
+      run:
+        shell: powershell
+    env:
+      DEPLOY_IMAGE: ${{ github.event.inputs.simulate_bad_image == 'true' && 'ghcr.io/vyshu-09/iris-ml:sha-does-not-exist' || needs.build-test-push.outputs.image_ref }}
+
+    steps:
+      - name: Verify Kubernetes context
+        run: kubectl config current-context
+
+      - name: Verify Kubernetes nodes
+        run: kubectl get nodes
+
+      - name: Show current deployment image
+        run: kubectl get deployment iris-ml -o jsonpath='{.spec.template.spec.containers[0].image}'
+
+      - name: Pull tested image on the runner machine
+        if: github.event.inputs.simulate_bad_image != 'true'
+        run: docker pull $env:DEPLOY_IMAGE
+
+      - name: Load image into the Docker Desktop cluster node
+        if: github.event.inputs.simulate_bad_image != 'true'
+        run: |
+          cmd /c "docker save %DEPLOY_IMAGE% | docker exec -i desktop-control-plane ctr -n k8s.io images import -"
+
+      - name: Deploy the tested image
+        id: deploy
+        run: kubectl set image deployment/iris-ml "iris-api=$env:DEPLOY_IMAGE"
+
+      - name: Wait for Kubernetes rollout
+        id: rollout
+        run: kubectl rollout status deployment/iris-ml --timeout=180s
+
+      - name: Verify health through the Kubernetes Service
+        id: health
+        run: |
+          kubectl exec deployment/iris-ml -- python -c "import urllib.request; print(urllib.request.urlopen('http://iris-ml-service/health', timeout=10).read().decode())"
+
+      - name: Show deployed image and Pods
+        run: |
+          kubectl get deployment iris-ml -o wide
+          kubectl get pods -o wide
+
+      - name: Roll back because the rollout or health check failed
+        if: failure() && (steps.rollout.outcome == 'failure' || steps.health.outcome == 'failure')
+        run: kubectl rollout undo deployment/iris-ml
+
+      - name: Wait for rollback to finish
+        if: failure() && (steps.rollout.outcome == 'failure' || steps.health.outcome == 'failure')
+        run: kubectl rollout status deployment/iris-ml --timeout=180s
