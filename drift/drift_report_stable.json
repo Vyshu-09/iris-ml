@@ -1,0 +1,38 @@
+{
+  "method": "two-sample KS test",
+  "p_value_threshold": 0.05,
+  "min_drifted_features": 2,
+  "drifted_feature_count": 0,
+  "drifted_features": [],
+  "overall_drift": false,
+  "features": {
+    "sepal_length": {
+      "ks_statistic": 0.073333,
+      "p_value": 0.887706,
+      "drift_detected": false,
+      "reference_mean": 5.8433,
+      "current_mean": 5.8795
+    },
+    "sepal_width": {
+      "ks_statistic": 0.09,
+      "p_value": 0.692928,
+      "drift_detected": false,
+      "reference_mean": 3.054,
+      "current_mean": 3.0447
+    },
+    "petal_length": {
+      "ks_statistic": 0.08,
+      "p_value": 0.81732,
+      "drift_detected": false,
+      "reference_mean": 3.7587,
+      "current_mean": 3.6666
+    },
+    "petal_width": {
+      "ks_statistic": 0.116667,
+      "p_value": 0.368475,
+      "drift_detected": false,
+      "reference_mean": 1.1987,
+      "current_mean": 1.1066
+    }
+  }
+}
